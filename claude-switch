@@ -17,6 +17,7 @@
 #   claude-switch add <name>               `claude /login` 직후 Keychain → 파일 + Keychain 삭제
 #   claude-switch add <name> <path>        외부 credentials.json 파일에서 등록
 #   claude-switch remove <name>
+#   claude-switch doctor                  현재 상태 진단
 #
 # 주의: 현재 실행 중인 claude 세션엔 영향 없음. 다음 호출부터 새 계정 사용.
 
@@ -28,6 +29,42 @@ ACTIVE_LINK="$HOME/.claude/.credentials.json"
 LIVE_CONFIG="$HOME/.claude.json"
 
 mkdir -p "$ACCOUNTS_DIR"
+chmod 700 "$ACCOUNTS_DIR"
+
+validate_profile_name() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "❌ 잘못된 프로필 이름: $name" >&2
+    echo "   허용 문자: 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)" >&2
+    exit 2
+  fi
+}
+
+validate_credentials_file() {
+  local path="$1"
+  python3 - "$path" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"❌ credentials JSON 파싱 실패: {e}", file=sys.stderr)
+    sys.exit(1)
+oauth = data.get("claudeAiOauth", data)
+missing = [k for k in ("accessToken", "refreshToken") if not oauth.get(k)]
+if missing:
+    print("❌ credentials 필수 필드 없음: " + ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+PYEOF
+}
+
+delete_keychain_credentials() {
+  # Claude Code가 Keychain 값을 우선 읽으면 symlink 전환이 무시될 수 있어
+  # 전환/캡처 시마다 남아있는 Keychain credentials를 best-effort로 제거한다.
+  command -v security >/dev/null 2>&1 || return 0
+  security delete-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 || true
+}
 
 list_profiles() {
   local current=""
@@ -78,8 +115,28 @@ writeback_active_config() {
   chmod 600 "$ACCOUNTS_DIR/$current.config.json"
 }
 
+# Claude Code may update credentials with an atomic replace, which can turn
+# ~/.claude/.credentials.json from a symlink into a regular file. Preserve that
+# refreshed token before replacing the active link during a switch.
+writeback_active_credentials() {
+  if [ ! -f "$CURRENT_FILE" ]; then return 0; fi
+  if [ ! -f "$ACTIVE_LINK" ]; then return 0; fi
+  if [ -L "$ACTIVE_LINK" ]; then return 0; fi
+  local current dst
+  current=$(cat "$CURRENT_FILE")
+  dst="$ACCOUNTS_DIR/$current.json"
+  if validate_credentials_file "$ACTIVE_LINK"; then
+    cp "$ACTIVE_LINK" "$dst"
+    chmod 600 "$dst"
+    echo "✅ Claude가 갱신한 credentials를 $current 프로필에 저장함"
+  else
+    echo "⚠️  현재 credentials가 유효하지 않아 프로필에 덮어쓰지 않음: $ACTIVE_LINK" >&2
+  fi
+}
+
 switch_to() {
   local name="$1"
+  validate_profile_name "$name"
   local cred_src="$ACCOUNTS_DIR/$name.json"
   local cfg_src="$ACCOUNTS_DIR/$name.config.json"
   if [ ! -f "$cred_src" ]; then
@@ -87,12 +144,23 @@ switch_to() {
     list_profiles >&2
     exit 1
   fi
+  validate_credentials_file "$cred_src"
   # 1. write back current state
   writeback_active_config
-  # 2. swap credentials symlink
+  writeback_active_credentials
+  # 2. make sure Claude Code cannot prefer stale Keychain credentials
+  delete_keychain_credentials
+  # 3. swap credentials symlink
   mkdir -p "$(dirname "$ACTIVE_LINK")"
-  ln -sf "$cred_src" "$ACTIVE_LINK"
-  # 3. load new profile's .claude.json snapshot (if exists)
+  rm -f "$ACTIVE_LINK"
+  ln -s "$cred_src" "$ACTIVE_LINK"
+  local link_target
+  link_target=$(readlink "$ACTIVE_LINK")
+  if [ "$link_target" != "$cred_src" ]; then
+    echo "❌ credentials symlink 생성 실패: $ACTIVE_LINK → $link_target" >&2
+    exit 1
+  fi
+  # 4. load new profile's .claude.json snapshot (if exists)
   if [ -f "$cfg_src" ]; then
     cp "$cfg_src" "$LIVE_CONFIG"
     chmod 600 "$LIVE_CONFIG"
@@ -100,10 +168,12 @@ switch_to() {
     echo "⚠️  $name.config.json 없음. ~/.claude.json은 그대로 유지." >&2
     echo "    이번 claude 실행 후 자동 캡처됩니다."
   fi
-  # 4. mark active
+  # 5. mark active
   echo "$name" > "$CURRENT_FILE"
-  # 5. fresh-fetch oauthAccount from token to prevent stale/wrong data
+  # 6. fresh-fetch oauthAccount from token to prevent stale/wrong data
   refresh_oauth_account "$name"
+  # 7. remove Keychain again in case any helper recreated it during refresh path
+  delete_keychain_credentials
   echo "✅ 전환됨: $name"
 }
 
@@ -167,20 +237,98 @@ os.chmod(cfg_path, 0o600)
 PYEOF
 }
 
+doctor() {
+  local ok=1
+  echo "claude-switch doctor"
+  echo "HOME         : $HOME"
+  echo "accounts dir : $ACCOUNTS_DIR"
+  if [ -d "$ACCOUNTS_DIR" ]; then
+    echo "accounts perm: $(stat -f %Lp "$ACCOUNTS_DIR" 2>/dev/null || stat -c %a "$ACCOUNTS_DIR" 2>/dev/null || echo unknown)"
+  else
+    echo "❌ accounts dir 없음"
+    ok=0
+  fi
+
+  local current=""
+  if [ -f "$CURRENT_FILE" ]; then
+    current=$(cat "$CURRENT_FILE")
+    echo "current      : $current"
+  else
+    echo "⚠️  current 파일 없음: $CURRENT_FILE"
+    ok=0
+  fi
+
+  if [ -L "$ACTIVE_LINK" ]; then
+    local target
+    target=$(readlink "$ACTIVE_LINK")
+    echo "credentials  : $ACTIVE_LINK → $target"
+    if [ -n "$current" ] && [ "$target" != "$ACCOUNTS_DIR/$current.json" ]; then
+      echo "❌ symlink 대상이 current 프로필과 다름"
+      ok=0
+    fi
+    if [ -f "$target" ]; then
+      if validate_credentials_file "$target"; then
+        echo "credentials  : JSON/accessToken/refreshToken OK"
+      else
+        ok=0
+      fi
+    else
+      echo "❌ symlink 대상 파일 없음: $target"
+      ok=0
+    fi
+  else
+    echo "❌ credentials가 symlink가 아님: $ACTIVE_LINK"
+    ok=0
+  fi
+
+  if command -v security >/dev/null 2>&1; then
+    if security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1; then
+      echo "❌ Keychain에 Claude Code-credentials가 남아있음"
+      echo "   해결: claude-switch <profile> 또는 security delete-generic-password -s 'Claude Code-credentials'"
+      ok=0
+    else
+      echo "keychain     : Claude Code-credentials 없음 OK"
+    fi
+  else
+    echo "keychain     : security 명령 없음 (macOS가 아니면 정상)"
+  fi
+
+  if [ -f "$LIVE_CONFIG" ]; then
+    if python3 -m json.tool "$LIVE_CONFIG" >/dev/null 2>&1; then
+      echo "config       : $LIVE_CONFIG JSON OK"
+    else
+      echo "❌ config JSON 파싱 실패: $LIVE_CONFIG"
+      ok=0
+    fi
+  else
+    echo "⚠️  config 없음: $LIVE_CONFIG"
+  fi
+
+  [ "$ok" -eq 1 ] && echo "✅ doctor OK" || exit 1
+}
+
 add_from_file() {
   local name="$1"
   local src="$2"
+  validate_profile_name "$name"
   if [ ! -f "$src" ]; then
     echo "❌ 파일 없음: $src" >&2
     exit 1
   fi
+  validate_credentials_file "$src"
   cp "$src" "$ACCOUNTS_DIR/$name.json"
   chmod 600 "$ACCOUNTS_DIR/$name.json"
+  if [ -f "$LIVE_CONFIG" ] && [ ! -f "$ACCOUNTS_DIR/$name.config.json" ]; then
+    cp "$LIVE_CONFIG" "$ACCOUNTS_DIR/$name.config.json"
+    chmod 600 "$ACCOUNTS_DIR/$name.config.json"
+    echo "✅ 현재 .claude.json 스냅샷 저장됨"
+  fi
   echo "✅ 프로필 추가됨: $name"
 }
 
 capture_profile() {
   local name="$1"
+  validate_profile_name "$name"
   echo "Keychain에서 'Claude Code-credentials' 읽는 중..."
   local raw
   if ! raw=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null); then
@@ -189,22 +337,20 @@ capture_profile() {
   fi
   echo "$raw" > "$ACCOUNTS_DIR/$name.json"
   chmod 600 "$ACCOUNTS_DIR/$name.json"
-  if ! python3 -c "import json; json.load(open('$ACCOUNTS_DIR/$name.json'))" 2>/dev/null; then
-    echo "⚠️  저장됐지만 JSON 파싱 실패. 수동 확인 필요: $ACCOUNTS_DIR/$name.json" >&2
-  fi
+  validate_credentials_file "$ACCOUNTS_DIR/$name.json"
   # 현재 ~/.claude.json도 함께 캡처 (방금 claude /login한 직후라 이 프로필 상태)
   if [ -f "$LIVE_CONFIG" ]; then
     cp "$LIVE_CONFIG" "$ACCOUNTS_DIR/$name.config.json"
     chmod 600 "$ACCOUNTS_DIR/$name.config.json"
     echo "✅ .claude.json 스냅샷 저장됨"
   fi
-  security delete-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 && \
-    echo "✅ Keychain 항목 삭제됨"
+  delete_keychain_credentials
+  echo "✅ Keychain 항목 삭제됨(없어도 정상)"
   # 활성 링크가 깨졌으면 이 프로필로 자동 활성화
   if [ ! -L "$ACTIVE_LINK" ]; then
     mkdir -p "$(dirname "$ACTIVE_LINK")"
     rm -f "$ACTIVE_LINK"
-    ln -sf "$ACCOUNTS_DIR/$name.json" "$ACTIVE_LINK"
+    ln -s "$ACCOUNTS_DIR/$name.json" "$ACTIVE_LINK"
     echo "$name" > "$CURRENT_FILE"
     echo "✅ 활성 링크 복구됨 → $name"
   fi
@@ -213,6 +359,7 @@ capture_profile() {
 
 remove_profile() {
   local name="$1"
+  validate_profile_name "$name"
   if [ ! -f "$ACCOUNTS_DIR/$name.json" ]; then
     echo "❌ 프로필 '$name' 없음" >&2
     exit 1
@@ -231,7 +378,10 @@ case "${1:-}" in
   "")             show_current ;;
   -l|--list|list) list_profiles ;;
   -h|--help|help)
-    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  doctor)
+    doctor
     ;;
   add)
     case $# in

@@ -35,13 +35,53 @@ Claude Code는 Keychain 항목이 없으면 `~/.claude/.credentials.json` 파일
 
 ## 설치
 
+### 설치 스크립트 사용
+
 ```bash
+git clone https://github.com/lkjsays/claude-switch.git
+cd claude-switch
+./install.sh
+```
+
+기본 설치 위치는 `~/.local/bin/claude-switch`.
+
+다른 위치에 설치하려면:
+
+```bash
+PREFIX=/opt/homebrew ./install.sh       # /opt/homebrew/bin/claude-switch
+BIN_DIR=/usr/local/bin ./install.sh     # /usr/local/bin/claude-switch
+```
+
+`~/.local/bin`이 `$PATH`에 없다면 shell 설정에 추가:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+설치 확인:
+
+```bash
+which claude-switch
+claude-switch --help
+```
+
+### curl로 단일 파일 설치
+
+```bash
+mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/lkjsays/claude-switch/main/claude-switch \
   -o ~/.local/bin/claude-switch
 chmod +x ~/.local/bin/claude-switch
 ```
 
-`~/.local/bin`이 `$PATH`에 있어야 함.
+### 업데이트
+
+repo에서 작업 중이라면:
+
+```bash
+git pull
+./install.sh
+```
 
 ## 사용법
 
@@ -76,6 +116,7 @@ claude-switch personal         # 즉시 전환 (다음 claude 호출부터 새 �
 ```bash
 claude-switch add <name> <path>   # 외부 credentials.json 파일에서 등록
 claude-switch remove <name>       # 프로필 삭제 (활성 프로필은 불가)
+claude-switch doctor              # symlink/Keychain/JSON 상태 진단
 ```
 
 ## 주의사항
@@ -83,6 +124,9 @@ claude-switch remove <name>       # 프로필 삭제 (활성 프로필은 불가
 - **현재 실행 중인 `claude` 세션엔 영향 없음**. 다음 호출부터 새 계정 사용.
 - `claude /login` 직후 `claude-switch add <name>` 호출 전에 또 `claude /login`을 하면 Keychain이 덮어써짐. 항상 **login 1번 → add 1번** 순서.
 - `oauthAccount` fresh fetch는 `https://api.anthropic.com/api/oauth/profile` 호출이 필요. 네트워크 실패 시 silent fail (로컬 데이터는 그대로).
+- 프로필 이름은 영문, 숫자, 점(`.`), 밑줄(`_`), 하이픈(`-`)만 허용.
+- 전환이 꼬이거나 재인증을 요구하면 `claude-switch doctor`로 상태를 확인.
+- Claude Code가 토큰 refresh 중 credentials symlink를 일반 파일로 바꾼 경우, 다음 전환 때 현재 credentials를 활성 프로필에 먼저 저장한 뒤 전환.
 
 ## 요구사항
 
