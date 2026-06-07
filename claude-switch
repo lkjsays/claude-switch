@@ -7,8 +7,12 @@
 #   ~/.claude-accounts/.current             active profile name
 #
 # Active state:
-#   ~/.claude/.credentials.json → ~/.claude-accounts/<active>.json   (symlink)
+#   ~/.claude/.credentials.json ← copy of ~/.claude-accounts/<active>.json
 #   ~/.claude.json              ← copy of ~/.claude-accounts/<active>.config.json
+#
+# Note: ~/.claude/.credentials.json is intentionally a regular file, not a
+# symlink. Claude Code may refresh tokens using atomic rename, which replaces
+# symlinks instead of following them. We sync the live file back before switches.
 #
 # Usage:
 #   claude-switch                          현재 활성 프로필 표시
@@ -25,7 +29,7 @@ set -euo pipefail
 
 ACCOUNTS_DIR="$HOME/.claude-accounts"
 CURRENT_FILE="$ACCOUNTS_DIR/.current"
-ACTIVE_LINK="$HOME/.claude/.credentials.json"
+ACTIVE_CREDENTIALS="$HOME/.claude/.credentials.json"
 LIVE_CONFIG="$HOME/.claude.json"
 
 mkdir -p "$ACCOUNTS_DIR"
@@ -60,7 +64,7 @@ PYEOF
 }
 
 delete_keychain_credentials() {
-  # Claude Code가 Keychain 값을 우선 읽으면 symlink 전환이 무시될 수 있어
+  # Claude Code가 Keychain 값을 우선 읽으면 파일 기반 전환이 무시될 수 있어
   # 전환/캡처 시마다 남아있는 Keychain credentials를 best-effort로 제거한다.
   command -v security >/dev/null 2>&1 || return 0
   security delete-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 || true
@@ -91,16 +95,39 @@ show_current() {
     local current
     current=$(cat "$CURRENT_FILE")
     echo "현재 프로필: $current"
-    if [ -L "$ACTIVE_LINK" ]; then
-      echo "credentials : $ACTIVE_LINK → $(readlink "$ACTIVE_LINK")"
+    if [ -L "$ACTIVE_CREDENTIALS" ]; then
+      echo "credentials : $ACTIVE_CREDENTIALS → $(readlink "$ACTIVE_CREDENTIALS") (legacy symlink)"
+      echo "              다음 전환 시 regular file로 변환됩니다."
+    elif [ -f "$ACTIVE_CREDENTIALS" ]; then
+      echo "credentials : $ACTIVE_CREDENTIALS ($(wc -c <"$ACTIVE_CREDENTIALS" | tr -d ' ') bytes)"
     else
-      echo "⚠️  $ACTIVE_LINK 가 심볼릭 링크가 아님 (또는 없음)"
+      echo "⚠️  $ACTIVE_CREDENTIALS 없음"
     fi
     if [ -f "$LIVE_CONFIG" ]; then
       echo "config      : $LIVE_CONFIG ($(wc -c <"$LIVE_CONFIG" | tr -d ' ') bytes)"
     fi
   else
     echo "활성 프로필 없음"
+  fi
+}
+
+# Write current ~/.claude/.credentials.json back to the active profile.
+# This preserves refreshed tokens written by Claude Code before switching away.
+writeback_active_credentials() {
+  if [ ! -f "$CURRENT_FILE" ]; then return 0; fi
+  if [ ! -e "$ACTIVE_CREDENTIALS" ]; then return 0; fi
+  local current dst
+  current=$(cat "$CURRENT_FILE")
+  dst="$ACCOUNTS_DIR/$current.json"
+  if [ -f "$dst" ] && [ "$ACTIVE_CREDENTIALS" -ef "$dst" ]; then
+    return 0
+  fi
+  if validate_credentials_file "$ACTIVE_CREDENTIALS"; then
+    cp "$ACTIVE_CREDENTIALS" "$dst"
+    chmod 600 "$dst"
+    echo "✅ Claude가 갱신한 credentials를 $current 프로필에 저장함"
+  else
+    echo "⚠️  현재 credentials가 유효하지 않아 프로필에 덮어쓰지 않음: $ACTIVE_CREDENTIALS" >&2
   fi
 }
 
@@ -115,25 +142,10 @@ writeback_active_config() {
   chmod 600 "$ACCOUNTS_DIR/$current.config.json"
 }
 
-# Claude Code may update credentials with an atomic replace, which can turn
-# ~/.claude/.credentials.json from a symlink into a regular file. Preserve that
-# refreshed token before replacing the active link during a switch.
-writeback_active_credentials() {
-  if [ ! -f "$CURRENT_FILE" ]; then return 0; fi
-  if [ ! -f "$ACTIVE_LINK" ]; then return 0; fi
-  if [ -L "$ACTIVE_LINK" ]; then return 0; fi
-  local current dst
-  current=$(cat "$CURRENT_FILE")
-  dst="$ACCOUNTS_DIR/$current.json"
-  if validate_credentials_file "$ACTIVE_LINK"; then
-    cp "$ACTIVE_LINK" "$dst"
-    chmod 600 "$dst"
-    echo "✅ Claude가 갱신한 credentials를 $current 프로필에 저장함"
-  else
-    echo "⚠️  현재 credentials가 유효하지 않아 프로필에 덮어쓰지 않음: $ACTIVE_LINK" >&2
-  fi
+writeback_active() {
+  writeback_active_credentials
+  writeback_active_config
 }
-
 switch_to() {
   local name="$1"
   validate_profile_name "$name"
@@ -145,21 +157,15 @@ switch_to() {
     exit 1
   fi
   validate_credentials_file "$cred_src"
-  # 1. write back current state
-  writeback_active_config
-  writeback_active_credentials
+  # 1. write back current state, including refreshed live credentials
+  writeback_active
   # 2. make sure Claude Code cannot prefer stale Keychain credentials
   delete_keychain_credentials
-  # 3. swap credentials symlink
-  mkdir -p "$(dirname "$ACTIVE_LINK")"
-  rm -f "$ACTIVE_LINK"
-  ln -s "$cred_src" "$ACTIVE_LINK"
-  local link_target
-  link_target=$(readlink "$ACTIVE_LINK")
-  if [ "$link_target" != "$cred_src" ]; then
-    echo "❌ credentials symlink 생성 실패: $ACTIVE_LINK → $link_target" >&2
-    exit 1
-  fi
+  # 3. copy credentials into the live path as a regular file
+  mkdir -p "$(dirname "$ACTIVE_CREDENTIALS")"
+  rm -f "$ACTIVE_CREDENTIALS"
+  cp "$cred_src" "$ACTIVE_CREDENTIALS"
+  chmod 600 "$ACTIVE_CREDENTIALS"
   # 4. load new profile's .claude.json snapshot (if exists)
   if [ -f "$cfg_src" ]; then
     cp "$cfg_src" "$LIVE_CONFIG"
@@ -258,26 +264,25 @@ doctor() {
     ok=0
   fi
 
-  if [ -L "$ACTIVE_LINK" ]; then
+  if [ -L "$ACTIVE_CREDENTIALS" ]; then
     local target
-    target=$(readlink "$ACTIVE_LINK")
-    echo "credentials  : $ACTIVE_LINK → $target"
-    if [ -n "$current" ] && [ "$target" != "$ACCOUNTS_DIR/$current.json" ]; then
-      echo "❌ symlink 대상이 current 프로필과 다름"
+    target=$(readlink "$ACTIVE_CREDENTIALS")
+    echo "⚠️  credentials  : $ACTIVE_CREDENTIALS → $target (legacy symlink)"
+    echo "   해결: claude-switch <profile> 실행 시 regular file로 변환됨"
+    if [ -f "$target" ] && validate_credentials_file "$target"; then
+      echo "credentials  : symlink target JSON/accessToken/refreshToken OK"
+    else
       ok=0
     fi
-    if [ -f "$target" ]; then
-      if validate_credentials_file "$target"; then
-        echo "credentials  : JSON/accessToken/refreshToken OK"
-      else
-        ok=0
-      fi
+  elif [ -f "$ACTIVE_CREDENTIALS" ]; then
+    echo "credentials  : $ACTIVE_CREDENTIALS (regular file)"
+    if validate_credentials_file "$ACTIVE_CREDENTIALS"; then
+      echo "credentials  : JSON/accessToken/refreshToken OK"
     else
-      echo "❌ symlink 대상 파일 없음: $target"
       ok=0
     fi
   else
-    echo "❌ credentials가 symlink가 아님: $ACTIVE_LINK"
+    echo "❌ credentials 파일 없음: $ACTIVE_CREDENTIALS"
     ok=0
   fi
 
@@ -347,10 +352,10 @@ capture_profile() {
   delete_keychain_credentials
   echo "✅ Keychain 항목 삭제됨(없어도 정상)"
   # 활성 링크가 깨졌으면 이 프로필로 자동 활성화
-  if [ ! -L "$ACTIVE_LINK" ]; then
-    mkdir -p "$(dirname "$ACTIVE_LINK")"
-    rm -f "$ACTIVE_LINK"
-    ln -s "$ACCOUNTS_DIR/$name.json" "$ACTIVE_LINK"
+  if [ ! -L "$ACTIVE_CREDENTIALS" ]; then
+    mkdir -p "$(dirname "$ACTIVE_CREDENTIALS")"
+    rm -f "$ACTIVE_CREDENTIALS"
+    ln -s "$ACCOUNTS_DIR/$name.json" "$ACTIVE_CREDENTIALS"
     echo "$name" > "$CURRENT_FILE"
     echo "✅ 활성 링크 복구됨 → $name"
   fi

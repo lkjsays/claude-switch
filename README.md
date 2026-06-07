@@ -11,7 +11,7 @@ macOS에서 Claude Code의 여러 OAuth 계정을 빠르게 전환하는 CLI.
 - **계정 정보 캐시 불일치** — `~/.claude.json`의 `oauthAccount` 객체가 따로 캐시돼서 헤더 표시/청구 추적이 꼬임
 
 `claude-switch`는:
-- Keychain을 **완전히 우회** — 토큰을 파일로 저장하고 symlink만 갈아끼움
+- Keychain을 **완전히 우회** — 토큰을 프로필별 파일로 저장하고 활성 credentials를 복사/동기화
 - 계정별 `~/.claude.json` 스냅샷도 함께 관리
 - 매 전환마다 토큰의 실제 계정 정보를 API에서 fresh fetch → 절대 안 꼬임
 - 0.5초 내 전환, Hermes/스크립트/SSH에서도 동일하게 동작
@@ -27,11 +27,13 @@ macOS에서 Claude Code의 여러 OAuth 계정을 빠르게 전환하는 CLI.
   office.config.json
   ...
 
-~/.claude/.credentials.json → ~/.claude-accounts/<active>.json   (symlink)
+~/.claude/.credentials.json ← copy of ~/.claude-accounts/<active>.json
 ~/.claude.json              ← copy of ~/.claude-accounts/<active>.config.json
 ```
 
 Claude Code는 Keychain 항목이 없으면 `~/.claude/.credentials.json` 파일을 fallback으로 읽는 동작이 있음. 이 도구는 Keychain 항목을 처음 한 번 삭제한 뒤로는 파일만으로 동작.
+
+`~/.claude/.credentials.json`은 심볼릭 링크가 아니라 regular file로 유지한다. Claude Code가 토큰 refresh 때 atomic rename으로 파일을 교체해도 다음 `claude-switch` 실행 시 현재 활성 프로필 파일로 다시 동기화된다.
 
 ## 설치
 
