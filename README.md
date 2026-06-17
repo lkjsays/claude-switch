@@ -1,28 +1,95 @@
 # claude-switch
 
-macOS에서 Claude Code의 여러 OAuth 계정을 빠르게 전환하는 CLI.
+> 결론: 이 실험은 **실효성이 낮아 중단**한다.
 
-## 왜?
+`claude-switch`는 Claude Code의 여러 OAuth 계정을 빠르게 전환해서 사용량 제한을 우회/분산할 수 있는지 확인하기 위한 macOS용 실험 CLI였다.
 
-기존 도구(`aisw`, `claude-account` 등)는 macOS Keychain을 갈아끼우는 방식이라:
+## 실험 결론
 
-- **백그라운드/원격 호출에서 hang** — Keychain 권한 프롬프트가 GUI로 떠야 하는데 응답할 수 없음
-- **토큰 refresh마다 ACL 재요청** — "항상 허용"이 안정적으로 동작 안 함
-- **계정 정보 캐시 불일치** — `~/.claude.json`의 `oauthAccount` 객체가 따로 캐시돼서 헤더 표시/청구 추적이 꼬임
+처음 가정은 다음과 같았다.
 
-`claude-switch`는:
-- Keychain을 **완전히 우회** — 토큰을 프로필별 파일로 저장하고 활성 credentials를 복사/동기화
-- 계정별 `~/.claude.json` 스냅샷도 함께 관리
-- 매 전환마다 토큰의 실제 계정 정보를 API에서 fresh fetch → 절대 안 꼬임
-- 0.5초 내 전환, Hermes/스크립트/SSH에서도 동일하게 동작
+- 계정별 OAuth 토큰/설정을 파일로 보관한다.
+- 필요할 때 활성 credentials와 `~/.claude.json`을 바꿔치기한다.
+- 여러 계정을 번갈아 쓰면 Claude Code 사용 가능 시간이 늘어날 수 있다.
 
-## 동작 원리
+하지만 실제 사용 결과, **토큰/사용 가능 상태가 생각보다 빠르게 회복**되어 계정을 계속 바꿔가며 쓰는 운영 방식의 이득이 크지 않았다. 반대로 다음 비용이 생겼다.
 
+- 계정별 토큰/설정 관리 부담
+- Keychain, `~/.claude/.credentials.json`, `~/.claude.json` 간 상태 불일치 가능성
+- Claude Code 쪽 인증 동작 변경에 취약함
+- 잘못 전환했을 때 원인 파악이 번거로움
+
+따라서 이 저장소는 더 이상 적극적으로 개선하지 않고, **Claude Code OAuth 전환 실험 기록**으로 남긴다.
+
+## 현재 이 PC 정리 현황
+
+점검일: 2026-06-17
+
+### 저장소
+
+- 위치: `/Users/kijeonglee/Projects/claude-switch`
+- 브랜치: `main`
+- 원격 저장소: `git@github-lkjsays:lkjsays/claude-switch.git`
+- 현재 HEAD: `ca691ed`
+
+### 제거 실행 결과
+
+`./uninstall.sh --yes`로 제거를 실행했고, 아래 항목이 모두 정리되었음을 확인했다.
+
+- `/Users/kijeonglee/.local/bin/claude-switch`: 없음
+- `/opt/homebrew/bin/claude-switch`: 없음
+- `/usr/local/bin/claude-switch`: 없음
+- `claude-switch` 명령: PATH에서 찾을 수 없음
+- `/Users/kijeonglee/.claude/.credentials.json`: 없음
+- `/Users/kijeonglee/.claude-accounts`: 없음
+- `/Users/kijeonglee/.claude-homes`: 없음
+- Keychain `Claude Code-credentials`: 없음
+
+다시 Claude Code를 사용하려면 `claude /login`으로 재로그인하면 된다.
+
+## 정리 방법
+
+간단히 정리하려면 저장소에서 제공하는 제거 스크립트를 실행한다.
+
+```bash
+./uninstall.sh
 ```
+
+토큰/프로필 삭제 확인 질문 없이 전부 제거하려면:
+
+```bash
+./uninstall.sh --yes
+```
+
+프로필 백업은 남기고 실행 파일과 활성 credentials/Keychain 항목만 제거하려면:
+
+```bash
+./uninstall.sh --keep-accounts
+```
+
+수동으로 지우려면 아래 순서대로 실행한다.
+
+```bash
+rm -f ~/.local/bin/claude-switch
+rm -f ~/.claude/.credentials.json
+rm -rf ~/.claude-accounts
+rm -rf ~/.claude-homes
+security delete-generic-password -s "Claude Code-credentials"
+```
+
+다시 Claude Code를 사용하려면 재로그인한다.
+
+```bash
+claude /login
+```
+
+## 원래 동작 원리
+
+```text
 ~/.claude-accounts/
-  .current                    # 활성 프로필 이름
-  personal.json               # OAuth credentials (토큰)
-  personal.config.json        # ~/.claude.json 스냅샷 (oauthAccount 포함)
+  .current
+  personal.json
+  personal.config.json
   office.json
   office.config.json
   ...
@@ -31,111 +98,7 @@ macOS에서 Claude Code의 여러 OAuth 계정을 빠르게 전환하는 CLI.
 ~/.claude.json              ← copy of ~/.claude-accounts/<active>.config.json
 ```
 
-Claude Code는 Keychain 항목이 없으면 `~/.claude/.credentials.json` 파일을 fallback으로 읽는 동작이 있음. 이 도구는 Keychain 항목을 처음 한 번 삭제한 뒤로는 파일만으로 동작.
-
-`~/.claude/.credentials.json`은 심볼릭 링크가 아니라 regular file로 유지한다. Claude Code가 토큰 refresh 때 atomic rename으로 파일을 교체해도 다음 `claude-switch` 실행 시 현재 활성 프로필 파일로 다시 동기화된다.
-
-## 설치
-
-### 설치 스크립트 사용
-
-```bash
-git clone https://github.com/lkjsays/claude-switch.git
-cd claude-switch
-./install.sh
-```
-
-기본 설치 위치는 `~/.local/bin/claude-switch`.
-
-다른 위치에 설치하려면:
-
-```bash
-PREFIX=/opt/homebrew ./install.sh       # /opt/homebrew/bin/claude-switch
-BIN_DIR=/usr/local/bin ./install.sh     # /usr/local/bin/claude-switch
-```
-
-`~/.local/bin`이 `$PATH`에 없다면 shell 설정에 추가:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-설치 확인:
-
-```bash
-which claude-switch
-claude-switch --help
-```
-
-### curl로 단일 파일 설치
-
-```bash
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/lkjsays/claude-switch/main/claude-switch \
-  -o ~/.local/bin/claude-switch
-chmod +x ~/.local/bin/claude-switch
-```
-
-### 업데이트
-
-repo에서 작업 중이라면:
-
-```bash
-git pull
-./install.sh
-```
-
-## 사용법
-
-### 계정 추가
-
-```bash
-claude /login                  # 브라우저에서 로그인
-# Ctrl+C 또는 /exit
-claude-switch add personal     # Keychain 값 → 파일로 추출 + Keychain 삭제
-```
-
-여러 계정 등록할 때는 반복:
-
-```bash
-claude /login
-claude-switch add office
-
-claude /login
-claude-switch add team-enterprise
-```
-
-### 전환
-
-```bash
-claude-switch                  # 현재 활성 프로필 표시
-claude-switch --list           # 전체 목록
-claude-switch personal         # 즉시 전환 (다음 claude 호출부터 새 계정 사용)
-```
-
-### 기타
-
-```bash
-claude-switch add <name> <path>   # 외부 credentials.json 파일에서 등록
-claude-switch remove <name>       # 프로필 삭제 (활성 프로필은 불가)
-claude-switch doctor              # symlink/Keychain/JSON 상태 진단
-```
-
-## 주의사항
-
-- **현재 실행 중인 `claude` 세션엔 영향 없음**. 다음 호출부터 새 계정 사용.
-- `claude /login` 직후 `claude-switch add <name>` 호출 전에 또 `claude /login`을 하면 Keychain이 덮어써짐. 항상 **login 1번 → add 1번** 순서.
-- `oauthAccount` fresh fetch는 `https://api.anthropic.com/api/oauth/profile` 호출이 필요. 네트워크 실패 시 silent fail (로컬 데이터는 그대로).
-- 프로필 이름은 영문, 숫자, 점(`.`), 밑줄(`_`), 하이픈(`-`)만 허용.
-- 전환이 꼬이거나 재인증을 요구하면 `claude-switch doctor`로 상태를 확인.
-- Claude Code가 토큰 refresh 중 credentials symlink를 일반 파일로 바꾼 경우, 다음 전환 때 현재 credentials를 활성 프로필에 먼저 저장한 뒤 전환.
-
-## 요구사항
-
-- macOS
-- bash
-- python3 (oauthAccount fresh fetch에만 사용)
-- `claude` CLI
+Claude Code가 Keychain 대신 파일 기반 credentials를 읽는 동작을 이용해 계정 전환을 시도했다.
 
 ## 라이선스
 
