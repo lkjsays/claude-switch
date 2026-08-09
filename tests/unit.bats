@@ -245,6 +245,12 @@ setup() {
   refute_file_exists "$TOKENS_DIR/personal.token"
 }
 
+@test "ci: workflow does not trigger on the deleted v2-oauth-token branch" {
+  local hits
+  hits="$(grep -n 'v2-oauth-token' "$REPO_ROOT/.github/workflows/ci.yml" || true)"
+  [ -z "$hits" ] || flunk "삭제된 브랜치가 CI 트리거에 남아 있음:" "$hits"
+}
+
 @test "store: token files are not tracked by Git" {
   run bash -c "cd '$REPO_ROOT' && git ls-files | grep -E '\.token$|^tokens/' || true"
   [ -z "$output" ] || flunk "Git 에 토큰 파일이 추적되고 있음: $output"

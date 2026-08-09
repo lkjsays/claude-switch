@@ -1,0 +1,12 @@
+#!/bin/bash
+# macOS `security` 명령 스텁.
+#
+# 테스트에서 실제 Keychain 이 절대 호출되지 않도록 PATH 앞단에서 가로챈다.
+# 임시 HOME 은 Keychain 을 격리해 주지 못하므로, 이 스텁이 마지막 안전장치다.
+# 호출되면 로그만 남기고 아무것도 하지 않는다. 로그가 비어 있어야 정상이다.
+
+if [ -n "${SECURITY_STUB_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$SECURITY_STUB_LOG"
+fi
+
+exit 0

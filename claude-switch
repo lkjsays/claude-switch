@@ -15,6 +15,12 @@ umask 077
 
 VERSION="2.0.0"
 
+# 설치 서명. uninstall.sh 는 이 줄과 정확히 일치하는 줄이 있는 파일만 자기 설치본으로
+# 보고 제거한다. 'claude-switch' 라는 낱말이 본문에 있다는 이유만으로는 절대 지우지
+# 않는다. 값이나 표기를 바꾸면 기존 설치본을 제거하지 못하므로 함부로 바꾸지 않는다.
+# shellcheck disable=SC2034  # 서명 용도이므로 참조되지 않는 것이 정상이다
+CLAUDE_SWITCH_INSTALL_SIGNATURE="claude-switch-install-signature/v2/6f1a9c0b4d7e"
+
 STORE_DIR="$HOME/.claude-switch"
 CONFIG_FILE="$STORE_DIR/config"
 TOKENS_DIR="$STORE_DIR/tokens"

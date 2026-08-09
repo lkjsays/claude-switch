@@ -5,14 +5,16 @@
 > macOS Keychain)을 직접 갈아끼웠고, **v2는 전역 인증을 전혀 건드리지 않습니다.**
 > v2는 프로필별 OAuth 토큰을 해당 `claude` 프로세스에만 주입하는 실행 래퍼입니다.
 > **v1 프로필은 자동 변환되지 않습니다.** 계정마다 `claude setup-token`으로 새 토큰을
-> 발급해 다시 등록해야 합니다. v1이 필요하면 `v1.0.0` 태그 또는 `v1` 브랜치를 쓰세요.
+> 발급해 다시 등록해야 합니다. v1 전용 `v1` 브랜치나 `v1.0.0` 태그는 없습니다.
+> v1 코드는 일반 Git 히스토리(v2 재작성 이전 커밋)에만 남아 있습니다.
 
 여러 Claude 계정을 프로필로 등록해 두고, 원하는 계정으로 `claude`를 즉시 실행하는 CLI 래퍼.
 
 ```bash
 claude setup-token                 # 별도 터미널에서 계정 A 승인
 claude-switch add personal         # 토큰을 비표시 입력으로 붙여넣기
-claude-switch verify personal      # 계정·조직 확인
+claude-switch verify personal      # 저장 상태 + 실제 OAuth 요청 확인
+                                   # (이메일·조직은 브라우저 승인 화면에서 확인)
 
 claude-switch personal             # personal 계정으로 claude 실행
 claude-switch office -- -p "요약"  # office 계정으로 비대화형 실행
@@ -81,6 +83,49 @@ BIN_DIR=/usr/local/bin ./install.sh     # /usr/local/bin/claude-switch
 ```
 
 v1 설치본이 발견되면 확인을 요청합니다. 비대화형 환경에서는 `FORCE=1 ./install.sh`.
+
+### 제거
+
+```bash
+./uninstall.sh                 # 설치된 claude-switch 명령만 제거 (저장소 보존)
+./uninstall.sh --purge         # ~/.claude-switch 까지 제거 (삭제 전 확인)
+./uninstall.sh --purge --yes   # 확인 없이 저장소까지 제거
+```
+
+기본 실행은 **프로필과 토큰을 지우지 않습니다.** `~/.claude-switch`는 그대로 두고,
+이 도구가 설치한 `claude-switch` 실행 파일만 제거합니다. 삭제는 `--purge`를 명시했을
+때만 일어나며, `--yes` 없이 실행하면 삭제 전에 확인을 요청합니다. 확인을 거절하거나
+입력이 없으면(비대화형 EOF) 저장소를 그대로 보존하고 exit 0으로 끝납니다.
+
+제거 스크립트도 v2의 불변 원칙을 그대로 지킵니다:
+
+- `~/.claude/.credentials.json`, `~/.claude.json`, Keychain의 `Claude Code-credentials`를
+  읽지도 지우지도 않습니다. **v2는 전역 인증을 바꾼 적이 없으므로 되돌릴 것도 없습니다.**
+- v1 저장소(`~/.claude-accounts`, `~/.claude-homes`)를 건드리지 않습니다. 삭제 여부는
+  직접 결정하세요.
+- `~/.claude-switch`가 심볼릭 링크이거나 디렉터리가 아니면 `--purge`는 대상을 따라가지
+  않고 exit 1로 거부합니다. 이 검사는 **설치본을 지우기 전에** 이뤄지므로, 명령만
+  지워지고 저장소는 남는 어중간한 상태가 생기지 않습니다.
+- 제거 대상은 소스에 박힌 **설치 서명 줄이 정확히 일치하는 파일뿐**입니다. 본문에
+  `claude-switch`라는 낱말이 있다는 이유만으로는 지우지 않으므로, 이름만 같은 남의
+  스크립트는 그대로 남습니다.
+- 명령 파일 자체가 심볼릭 링크이면 따라가지 않고 건너뜁니다(그 경로만 건너뛰고 나머지
+  검색은 계속하며 exit 0).
+- **검색 경로 자체나 그 상위 경로 구성요소가 심볼릭 링크이거나, 절대 경로가 아니거나
+  `..`가 섞여 있으면** 링크 너머를 해석하지 않고 **exit 1로 중단합니다.** 이 검사는
+  **모든 검색 경로에 대해 삭제가 시작되기 전에** 끝나므로, 앞선 경로의 설치본만 지워지고
+  뒤에서 실패하는 부분 제거가 생기지 않습니다. 건너뛴 뒤 성공으로 끝내면 설치본이 남아
+  있는데도 제거에 성공한 것처럼 보이므로, 조용히 넘어가지 않습니다.
+- 존재하지 않는 정상적인 절대 경로는 안전하게 취급합니다(설치본이 없을 뿐입니다).
+- 여러 번 실행해도 결과가 같습니다(idempotent).
+
+검색 위치는 설치와 대칭입니다. 기본값은 `$BIN_DIR`, `$PREFIX/bin`, `~/.local/bin`,
+`/opt/homebrew/bin`, `/usr/local/bin`이며 `CLAUDE_SWITCH_BIN_DIRS`(콜론 구분)로 통째로
+바꿀 수 있습니다.
+
+```bash
+BIN_DIR=/usr/local/bin ./uninstall.sh
+```
 
 ### 요구사항
 
@@ -222,8 +267,9 @@ claude-switch verify <profile>
 OAuth 토큰입니다. 수명과 발급 경로가 달라 안전한 변환이 불가능합니다.
 
 `~/.claude-accounts` 삭제는 직접 결정하세요. v2는 지우지 않습니다.
-v1 코드가 필요하면 `git checkout v1.0.0` (또는 `v1` 브랜치). 단 **v1 토큰이 이미 만료됐을
-수 있어 v1 인증 상태까지 복구된다고 보장하지 않습니다.**
+v1 전용 `v1` 브랜치나 `v1.0.0` 태그는 없습니다. v1 코드가 필요하면 일반 Git 히스토리에서
+v2 재작성 이전 커밋을 직접 찾아 꺼내야 합니다(`git log -- claude-switch`). 단 **v1 토큰이
+이미 만료됐을 수 있어 v1 인증 상태까지 복구된다고 보장하지 않습니다.**
 
 ## 종료 코드
 
@@ -238,8 +284,8 @@ v1 코드가 필요하면 `git checkout v1.0.0` (또는 `v1` 브랜치). 단 **v
 ## 개발
 
 ```bash
-bash -n claude-switch install.sh
-shellcheck -S warning claude-switch install.sh
+bash -n claude-switch install.sh uninstall.sh
+shellcheck -S warning claude-switch install.sh uninstall.sh
 bats tests/
 ```
 

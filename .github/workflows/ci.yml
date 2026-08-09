@@ -6,7 +6,7 @@ name: CI
 
 on:
   push:
-    branches: [main, v2-oauth-token]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -33,10 +33,10 @@ jobs:
       # 두 스크립트 모두 macOS 기본 bash 3.2 로 파싱되는지 확인한다.
       # 그냥 `bash` 는 PATH 의 Homebrew bash 5.x 로 잡히므로 경로를 고정한다.
       - name: Syntax check
-        run: /bin/bash -n claude-switch install.sh
+        run: /bin/bash -n claude-switch install.sh uninstall.sh
 
       - name: ShellCheck
-        run: shellcheck -S warning claude-switch install.sh
+        run: shellcheck -S warning claude-switch install.sh uninstall.sh
 
       - name: Bats
         run: bats tests/
