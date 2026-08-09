@@ -1,0 +1,57 @@
+name: CI
+
+# 실제 계정·실제 토큰은 쓰지 않는다. 테스트는 임시 HOME, 합성 토큰,
+# 가짜 claude 스텁만 사용한다(tests/test_helper.bash 참고).
+# 실제 E2E 는 사람이 tests/e2e.md 절차로 수행한다.
+
+on:
+  push:
+    branches: [main, v2-oauth-token]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # claude-switch 의 shebang 은 #!/bin/bash 이므로 macOS 기본 bash 3.2 로 실행된다.
+      # README 의 "bash 3.2+" 주장을 실제로 검증하는 자리이기도 하다.
+      - name: Show shell versions
+        run: |
+          /bin/bash --version | head -1
+          echo "SHELL PATH: $(command -v bash)"
+
+      - name: Install bats and shellcheck
+        run: brew install bats-core shellcheck
+
+      # 두 스크립트 모두 macOS 기본 bash 3.2 로 파싱되는지 확인한다.
+      # 그냥 `bash` 는 PATH 의 Homebrew bash 5.x 로 잡히므로 경로를 고정한다.
+      - name: Syntax check
+        run: /bin/bash -n claude-switch install.sh
+
+      - name: ShellCheck
+        run: shellcheck -S warning claude-switch install.sh
+
+      - name: Bats
+        run: bats tests/
+
+      - name: Working tree must stay clean
+        run: |
+          git status --short
+          test -z "$(git status --porcelain)"
+
+      # 합성 표식(TESTTOKEN/DUMMY)이 없는, 실제 토큰처럼 보이는 값이 추적 파일에
+      # 들어가지 않았는지 확인한다. 이 워크플로 자신은 패턴 문자열을 포함하므로 제외한다.
+      - name: Token leak scan
+        run: |
+          if git grep -nI -E 'sk-ant-[A-Za-z0-9_-]+' -- . ':!.github/workflows/ci.yml' \
+            | grep -v -e TESTTOKEN -e DUMMY; then
+            echo "::error::추적 파일에 토큰처럼 보이는 값이 있습니다"
+            exit 1
+          fi

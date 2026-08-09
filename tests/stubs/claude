@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# 테스트용 가짜 claude.
+#
+# 실제 네트워크·자격증명 접근을 하지 않는다. 받은 인자와 주입된 환경을 로그에
+# 기록하되, 토큰 원문은 절대 기록하지 않고 SHA-256 해시만 남긴다.
+
+set -u
+
+log="${CLAUDE_STUB_LOG:-/dev/null}"
+
+{
+  echo "--- invocation"
+  for a in "$@"; do
+    printf 'ARG[%s]\n' "$a"
+  done
+  echo "ARGC=$#"
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    echo "TOKEN_PRESENT=1"
+    printf 'TOKEN_SHA256=%s\n' "$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | shasum -a 256 | cut -d' ' -f1)"
+  else
+    echo "TOKEN_PRESENT=0"
+  fi
+  echo "CONFIG_DIR=${CLAUDE_CONFIG_DIR:-}"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "ANTHROPIC_API_KEY_PRESENT=1"
+  else
+    echo "ANTHROPIC_API_KEY_PRESENT=0"
+  fi
+  if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    echo "ANTHROPIC_AUTH_TOKEN_PRESENT=1"
+  else
+    echo "ANTHROPIC_AUTH_TOKEN_PRESENT=0"
+  fi
+  for provider_var in CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
+    eval "provider_value=\${$provider_var:-}"
+    if [ -n "$provider_value" ]; then
+      echo "${provider_var}_PRESENT=1"
+    else
+      echo "${provider_var}_PRESENT=0"
+    fi
+  done
+  if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+    echo "ANTHROPIC_BASE_URL_PRESENT=1"
+  else
+    echo "ANTHROPIC_BASE_URL_PRESENT=0"
+  fi
+} >>"$log"
+
+if [ "${CLAUDE_STUB_READ_STDIN:-0}" = "1" ]; then
+  stdin_data="$(cat)"
+  printf 'STDIN=%s\n' "$stdin_data" >>"$log"
+fi
+
+case "${1:-}" in
+  --version)
+    echo "2.1.219 (stub)"
+    exit 0
+    ;;
+  auth)
+    if [ "${2:-}" = "status" ]; then
+      if [ "${CLAUDE_STUB_AUTH_EXIT:-0}" != "0" ]; then
+        echo "Not authenticated (stub)" >&2
+        exit "${CLAUDE_STUB_AUTH_EXIT}"
+      fi
+      printf '%s\n' "${CLAUDE_STUB_AUTH_OUTPUT:-Account: stub@example.com
+Organization: Stub Org (max)}"
+      exit 0
+    fi
+    ;;
+esac
+
+if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ] && [ -n "${CLAUDE_STUB_AUTH_STATUS_EXIT:-}" ]; then
+  printf '%s\n' "${CLAUDE_STUB_STDERR:-auth status failed}" >&2
+  exit "$CLAUDE_STUB_AUTH_STATUS_EXIT"
+fi
+
+if [ "${1:-}" = "-p" ] && [ -n "${CLAUDE_STUB_INFERENCE_EXIT:-}" ]; then
+  printf '%s\n' "${CLAUDE_STUB_STDERR:-inference failed}" >&2
+  exit "$CLAUDE_STUB_INFERENCE_EXIT"
+fi
+
+if [ -n "${CLAUDE_STUB_STDOUT:-}" ]; then
+  printf '%s\n' "$CLAUDE_STUB_STDOUT"
+fi
+
+exit "${CLAUDE_STUB_EXIT:-0}"
