@@ -3,10 +3,19 @@
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식과
 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
-## [Unreleased] — 2.0.0 준비 중
+## [Unreleased]
 
-개발 브랜치는 `main`에 병합했고 브랜치는 삭제했습니다. 아직 태그는 만들지 않았습니다.
-릴리스 전에 실제 계정 두 개 이상으로 `tests/e2e.md` 절차를 통과해야 합니다.
+없음.
+
+## [2.0.0] — 2026-08-19
+
+실제 계정으로 `tests/e2e.md` 수동 절차를 수행해 합격 기준을 통과했습니다.
+실행 기록은 `tests/e2e-results.md`에 있습니다.
+
+수동 E2E 과정에서 문서 3곳의 사실오류를 발견해 정정했습니다(소스 무변경). `verify`가
+계정·조직을 표시한다는 서술, `.credentials.json`을 mtime 불변 대상으로 둔 판정 기준,
+`Ctrl-C` 1회로 종료된다는 서술이 모두 실제 동작과 달랐습니다. 자세한 내용은 아래
+"알려진 제약"과 `README.md`를 보세요.
 
 ### 파괴적 변경 (Breaking)
 
@@ -99,6 +108,15 @@
   삭제는 이 도구가 설치한 파일인지 확인한 뒤에만 이뤄집니다.
 - v1 옵션 `--yes` 단독 실행과 `--keep-accounts`는 더 이상 저장소를 지우지 않습니다.
   `--keep-accounts`는 알 수 없는 옵션으로 exit 2 입니다.
+
+### 알려진 제약
+
+- **등록 후에는 프로필의 계정을 확인할 수 없습니다.** `CLAUDE_CODE_OAUTH_TOKEN` 인증에서
+  `claude auth status`는 계정 정체성을 해석하지 않습니다(`--text`는 인증원 한 줄,
+  `--json`은 `loggedIn`·`authMethod`·`apiProvider`만). 따라서 `verify`는 토큰이 유효하고
+  살아 있다는 것까지만 보장하며, 서로 다른 프로필의 출력이 동일하게 보입니다. 계정 확인
+  지점은 `claude setup-token`의 브라우저 승인 화면뿐입니다. 보완책(`add --note`)은 후속
+  과제입니다.
 
 ### 이번 릴리스에 포함하지 않음 (후속 과제)
 
