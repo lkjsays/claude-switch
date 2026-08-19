@@ -19,13 +19,26 @@ claude-switch doctor             # 저장소 진단이 OK 인지 먼저 확인
 
 ## 1. 사전 스냅샷 (불변 확인용)
 
-v2 래퍼가 v1 저장소와 전역 자격증명 파일을 건드리지 않는지 전후 상태를 기록합니다.
-공식 `claude` 자식은 기본 공유 모드에서 `~/.claude.json` 메타데이터를 갱신할 수 있으므로
-이 파일은 불변 비교 대상이 아닙니다. 엄격한 설정 분리는 `--isolate`로 별도 확인합니다.
+v2 래퍼가 v1 저장소를 건드리지 않고 전역 계정이 바뀌지 않는지 전후 상태를 기록합니다.
+
+**mtime 비교 대상은 v1 저장소뿐입니다.** 공식 `claude`가 관리하는 두 파일은 제외합니다:
+
+- `~/.claude.json` — 기본 공유 모드에서 자식 `claude`가 메타데이터를 갱신합니다.
+- `~/.claude/.credentials.json` — 공식 CLI가 **OAuth 토큰을 주기적으로 갱신하며 재작성**합니다.
+  `claude auth status` 실행이나 다른 Claude Code 세션만으로도 mtime이 바뀌므로, mtime을
+  불변 기준으로 쓰면 `claude-switch`와 무관하게 실패합니다.
+
+이 두 파일에 대해 검증할 속성은 mtime이 아니라 **계정 정체성이 그대로인지**입니다.
+`claude-switch`가 두 파일에 아예 접근하지 않는다는 사실은 자동 순수성 테스트가 소스를
+정적으로 검사해 보장합니다.
 
 ```bash
+# v1 저장소: mtime 비교 대상
 stat -f '%N mode=%Lp mtime=%m size=%z' \
-  ~/.claude-accounts ~/.claude/.credentials.json 2>&1 | tee /tmp/cs-before.txt
+  ~/.claude-accounts ~/.claude-homes 2>&1 | tee /tmp/cs-before.txt
+
+# 전역 계정 정체성: 값 비교 대상
+claude auth status --json | tee /tmp/cs-auth-before.json
 ```
 
 Keychain 값이나 항목을 조회하는 명령은 실행하지 않습니다. v2 실행 코드에 Keychain 접근
@@ -52,8 +65,14 @@ claude-switch verify e2e-a
 확인 사항:
 
 - 토큰 파일 권한이 `600`으로 표시된다.
-- `계정 확인` 아래 이메일과 조직이 **계정 A의 것**이다.
+- `인증 상태 :` 아래에 `Auth token: CLAUDE_CODE_OAUTH_TOKEN`이 나온다(인증원이 OAuth 토큰).
+- `실제 호출 :` 아래에 모델 요청 성공이 표시된다.
 - 어디에도 토큰 원문이 없다.
+
+> **이메일·조직은 여기서 확인할 수 없습니다.** `CLAUDE_CODE_OAUTH_TOKEN` 인증에서
+> `claude auth status`는 계정 정체성을 해석하지 않습니다(`--text`는 인증원 한 줄,
+> `--json`은 `loggedIn`·`authMethod`·`apiProvider`만). 계정 확인 지점은 §2의 브라우저
+> 승인 화면뿐입니다.
 
 ## 4. 실행
 
@@ -84,8 +103,12 @@ claude-switch verify e2e-b
 
 확인 사항:
 
-- `verify e2e-b`가 **계정 B의** 이메일·조직을 표시한다.
-- 다시 `claude-switch verify e2e-a`를 실행하면 여전히 계정 A가 나온다(섞이지 않음).
+- `verify e2e-b`의 지문이 `e2e-a`와 **다르다**(토큰이 분리돼 있다).
+- `e2e-b`도 실제 모델 요청이 성공한다(토큰이 유효하다).
+- 다시 `claude-switch verify e2e-a`를 실행해도 지문이 그대로다(덮어써지지 않았다).
+
+`verify` 출력만으로는 두 프로필이 서로 다른 계정인지 **판별할 수 없습니다**(위 §3의 제약).
+계정 정체성은 §2의 브라우저 승인 화면에서 프로필마다 한 번 확인하는 것이 유일한 방법입니다.
 
 같은 터미널에서 번갈아 실행합니다.
 
@@ -148,24 +171,31 @@ revoke하세요.** 그대로 두면 유효한 1년 토큰이 남습니다.
 
 ```bash
 stat -f '%N mode=%Lp mtime=%m size=%z' \
-  ~/.claude-accounts ~/.claude/.credentials.json 2>&1 | tee /tmp/cs-after.txt
-diff /tmp/cs-before.txt /tmp/cs-after.txt && echo "✅ v1·전역 자격증명 상태 불변"
+  ~/.claude-accounts ~/.claude-homes 2>&1 | tee /tmp/cs-after.txt
+diff /tmp/cs-before.txt /tmp/cs-after.txt && echo "✅ v1 저장소 불변"
+
+claude auth status --json | tee /tmp/cs-auth-after.json
+diff /tmp/cs-auth-before.json /tmp/cs-auth-after.json && echo "✅ 전역 계정 동일"
 ```
 
 확인 사항:
 
-- `diff`가 비어 있다(v1 디렉터리와 전역 자격증명 파일의 mtime·크기가 그대로).
-- `~/.claude.json`은 공식 `claude` 자식이 갱신할 수 있으나 v2 실행 코드가 직접 접근하지 않는다.
-- v2 사용 전에 쓰던 계정으로 그냥 `claude`를 실행하면 여전히 그 계정이다.
+- v1 `diff`가 비어 있다.
+- 전역 `auth status`의 `email`·`orgId`·`orgName`·`subscriptionType`이 그대로다
+  (= v2 사용 전에 쓰던 계정으로 그냥 `claude`를 실행하면 여전히 그 계정이다).
+- `~/.claude/.credentials.json`과 `~/.claude.json`의 **mtime 변화는 실패가 아닙니다.**
+  공식 CLI의 토큰 갱신·메타데이터 갱신으로 바뀝니다. `claude-switch`가 접근하지 않는다는
+  것은 순수성 테스트(`tests/unit.bats`)가 보장합니다.
 
 ## 합격 기준
 
-- [ ] 브라우저 승인 화면에서 프로필별 이메일·조직을 직접 확인
+- [ ] 브라우저 승인 화면에서 프로필별 이메일·조직을 직접 확인 (**계정 정체성의 유일한 확인 지점**)
 - [ ] 프로필마다 `verify`의 OAuth 인증원 확인과 실제 모델 요청 성공
-- [ ] 두 계정 교차 실행에서 계정이 섞이지 않음
+- [ ] 프로필별 지문이 서로 다름 (토큰 분리)
+- [ ] 두 프로필을 번갈아·동시에 실행해도 각각 배너와 요청 성공이 정상 (상호 간섭 없음)
 - [ ] 인터랙티브·`-p`·stdin 파이프·종료코드·`Ctrl-C` 정상
 - [ ] `--bare`가 exit 2로 차단됨
 - [ ] `ps`·로그·히스토리·Git 어디에도 토큰 원문 없음
-- [ ] `~/.claude-accounts`, `~/.claude/.credentials.json` 불변
+- [ ] `~/.claude-accounts`·`~/.claude-homes` 불변, 전역 `auth status`의 계정 정보 동일
 - [ ] 자동 순수성 테스트에서 `~/.claude.json`·Keychain 직접 접근 코드 없음
 - [ ] 테스트 토큰 revoke 완료

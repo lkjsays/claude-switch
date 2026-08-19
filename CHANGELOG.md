@@ -39,8 +39,11 @@
 - `list` — 프로필과 지문(SHA-256 앞 8자), 기본 프로필 표시.
 - `default [<profile>]` — 기본 프로필 설정·조회. 첫 `add`가 자동으로 기본이 됩니다.
 - `remove <profile>` — 로컬 토큰 파일만 삭제하고 revoke 안내를 출력합니다.
-- `verify [<profile>]` — 권한·지문 검사 후 `claude auth status --text`로 계정·조직을
-  확인합니다. 자식 출력에 토큰이 섞여 나오면 `[redacted]`로 마스킹합니다.
+- `verify [<profile>]` — 권한·지문 검사 후 `claude auth status --text`로 인증원이 OAuth
+  토큰인지 확인하고, 이어서 실제 최소 모델 요청까지 수행합니다. **계정·조직은 표시되지
+  않습니다**: `CLAUDE_CODE_OAUTH_TOKEN` 인증에서 `auth status`는 인증원 한 줄만
+  출력합니다(`--json`에도 `email`·`orgName`이 없습니다). 자식 출력에 토큰이 섞여 나오면
+  `[redacted]`로 마스킹합니다.
 - `doctor` — 저장소 권한, 심볼릭 링크, 빈·잘못된 토큰, 기본 프로필, `claude` 경로,
   충돌 환경변수, v1 잔재를 진단합니다.
 - `migrate-check [--acknowledge]` — v1 잔재 확인과 수동 재등록 승인.
